@@ -1,0 +1,20 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "declaration": false,
+    "sourceMap": false,
+    "exactOptionalPropertyTypes": false,
+    "allowImportingTsExtensions": false,
+    "types": ["node"]
+  },
+  "include": [
+    "apps/**/src/**/*.ts",
+    "packages/**/src/**/*.ts",
+    "scripts/**/*.ts",
+    "spikes/**/*.ts",
+    "tests/**/*.ts",
+    "vitest.config.ts"
+  ],
+  "exclude": ["apps/web/**"]
+}

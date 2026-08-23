@@ -1,0 +1,23 @@
+{
+  "name": "@meshcompute/payment-adapter",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@tetherto/wdk": "1.0.0-beta.16",
+    "@tetherto/wdk-wallet-evm": "1.0.0-beta.17"
+  },
+  "devDependencies": {
+    "@types/node": "^22.18.0",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.7"
+  }
+}

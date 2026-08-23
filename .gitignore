@@ -1,0 +1,17 @@
+node_modules/
+.pnpm-store/
+dist/
+.next/
+coverage/
+*.tsbuildinfo
+.env
+.env.local
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
+*.log
+.DS_Store
+artifacts/*.json
+.qvac/
+models/

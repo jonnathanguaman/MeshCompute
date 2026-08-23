@@ -1,0 +1,11 @@
+{
+  "jobId": "job_123",
+  "executionToken": "demo-execution-token",
+  "provider": {
+    "id": "p_001",
+    "qvacPublicKey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "modelKey": "tooluse-llm"
+  },
+  "prompt": "Analyze this MeshCompute job. Check the assigned provider status, retrieve the job metadata, calculate the expected cost and report whether the recorded quote is consistent. If any required source cannot be retrieved, do not guess.",
+  "verificationMode": "LOCAL_SCHEMA"
+}

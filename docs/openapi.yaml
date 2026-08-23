@@ -1,0 +1,1144 @@
+openapi: 3.1.0
+info:
+  title: MeshCompute Marketplace API
+  version: 0.1.0
+  description: >-
+    Metadata-only control plane. Prompt, response, rawOutput and model content are
+    intentionally absent from every central API schema.
+servers:
+  - url: http://127.0.0.1:4000
+    description: Local API
+tags:
+  - name: Health
+  - name: Providers
+  - name: Jobs
+  - name: Payments
+  - name: Statistics
+  - name: Portal
+paths:
+  /health:
+    get:
+      tags: [Health]
+      operationId: getHealth
+      responses:
+        '200':
+          description: API and SQLite are ready.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthReady'
+        '503':
+          description: API is running but SQLite is unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthUnavailable'
+  /v1/providers:
+    get:
+      tags: [Providers]
+      operationId: listProviders
+      description: >-
+        Deliberate divergence from doc 00 §12: without ?status the endpoint
+        returns ALL providers ordered ONLINE > BUSY > OFFLINE, because the web
+        marketplace exposes availability filters. Pass ?status=ONLINE for the
+        spec's default behaviour.
+      parameters:
+        - in: query
+          name: status
+          schema:
+            $ref: '#/components/schemas/ProviderStatus'
+      responses:
+        '200':
+          description: Providers ordered by availability and reputation.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [providers]
+                properties:
+                  providers:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Provider'
+  /v1/providers/{id}:
+    get:
+      tags: [Providers]
+      operationId: getProvider
+      parameters:
+        - $ref: '#/components/parameters/ResourceId'
+      responses:
+        '200':
+          description: Provider metadata used by the web and reliability tools.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [provider]
+                properties:
+                  provider:
+                    $ref: '#/components/schemas/Provider'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/providers/register:
+    post:
+      tags: [Providers]
+      operationId: registerProvider
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProviderRegisterRequest'
+      responses:
+        '201':
+          description: Registered provider. The raw token is returned only here.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [provider, providerToken]
+                properties:
+                  provider:
+                    $ref: '#/components/schemas/Provider'
+                  providerToken:
+                    type: string
+                    writeOnly: true
+        '400':
+          $ref: '#/components/responses/ValidationError'
+  /v1/providers/{id}/heartbeat:
+    post:
+      tags: [Providers]
+      operationId: providerHeartbeat
+      security:
+        - providerBearer: []
+      parameters:
+        - $ref: '#/components/parameters/ResourceId'
+      responses:
+        '200':
+          description: Heartbeat accepted; provider is ONLINE.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [provider]
+                properties:
+                  provider:
+                    $ref: '#/components/schemas/Provider'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/jobs:
+    get:
+      tags: [Jobs]
+      operationId: listJobs
+      parameters:
+        - in: query
+          name: status
+          schema:
+            $ref: '#/components/schemas/JobStatus'
+        - in: query
+          name: providerId
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Metadata-only jobs.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [jobs]
+                properties:
+                  jobs:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Job'
+    post:
+      tags: [Jobs]
+      operationId: createJob
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/JobCreateRequest'
+      responses:
+        '201':
+          description: Job created and atomically assigned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobCreateResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/PricingUnavailable'
+        '504':
+          $ref: '#/components/responses/PricingTimeout'
+  /v1/jobs/{id}:
+    get:
+      tags: [Jobs]
+      operationId: getJob
+      parameters:
+        - $ref: '#/components/parameters/ResourceId'
+      responses:
+        '200':
+          description: Job metadata used by polling and reliability tools.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [job]
+                properties:
+                  job:
+                    $ref: '#/components/schemas/Job'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/jobs/{id}/progress:
+    patch:
+      tags: [Jobs]
+      operationId: updateJobProgress
+      security:
+        - executionTokenHeader: []
+        - executionBearer: []
+      parameters:
+        - $ref: '#/components/parameters/ResourceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/JobProgressPatch'
+      responses:
+        '200':
+          description: Updated job metadata.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [job]
+                properties:
+                  job:
+                    $ref: '#/components/schemas/Job'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /v1/jobs/{id}/settle:
+    post:
+      tags: [Payments]
+      operationId: settleJob
+      description: >-
+        Idempotently settles a VERIFIED job. SIMULATED is the safe default;
+        WDK_TESTNET broadcasts only to an allowlisted EVM testnet.
+      parameters:
+        - $ref: '#/components/parameters/ResourceId'
+      responses:
+        '200':
+          description: >-
+            Settled job. Repeated requests return the existing PAID job and do
+            not broadcast another transfer.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [job]
+                properties:
+                  job:
+                    $ref: '#/components/schemas/Job'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '502':
+          $ref: '#/components/responses/PaymentFailed'
+  /v1/stats:
+    get:
+      tags: [Statistics]
+      operationId: getMarketplaceStats
+      responses:
+        '200':
+          description: Public marketplace counters and atomic-unit payment total.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MarketplaceStats'
+  /v1/auth/register:
+    post:
+      tags: [Portal]
+      operationId: registerAccount
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuthRegisterRequest'
+      responses:
+        '201':
+          description: Account created with an active session token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthSession'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /v1/auth/login:
+    post:
+      tags: [Portal]
+      operationId: loginAccount
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuthLoginRequest'
+      responses:
+        '200':
+          description: Session created for valid credentials.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthSession'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /v1/auth/me:
+    get:
+      tags: [Portal]
+      operationId: getCurrentUser
+      security:
+        - sessionBearer: []
+      responses:
+        '200':
+          description: The user attached to the session token.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [user]
+                properties:
+                  user:
+                    $ref: '#/components/schemas/User'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /v1/auth/logout:
+    post:
+      tags: [Portal]
+      operationId: logoutAccount
+      security:
+        - sessionBearer: []
+      responses:
+        '200':
+          description: Session deleted (idempotent).
+  /v1/portal/wallet:
+    get:
+      tags: [Portal]
+      operationId: getWalletSummary
+      security:
+        - sessionBearer: []
+      responses:
+        '200':
+          description: >-
+            Balance summary for the session user. Clients see demo credit,
+            spent and remaining balance; providers see total earned.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [wallet]
+                properties:
+                  wallet:
+                    $ref: '#/components/schemas/WalletSummary'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /v1/portal/provider/listings:
+    get:
+      tags: [Portal]
+      operationId: listOwnListings
+      security:
+        - sessionBearer: []
+      responses:
+        '200':
+          description: Every machine published by the session provider.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [listings]
+                properties:
+                  listings:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Provider'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Portal]
+      operationId: createListing
+      description: >-
+        Publishes a new machine. If the QVAC public key already belongs to an
+        agent-registered row (or a machine of the same user), that row is
+        claimed/updated instead of duplicated.
+      security:
+        - sessionBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProviderListingUpsertRequest'
+      responses:
+        '201':
+          description: Machine published; visible to every client.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [listing]
+                properties:
+                  listing:
+                    $ref: '#/components/schemas/Provider'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /v1/portal/provider/listings/{id}:
+    post:
+      tags: [Portal]
+      operationId: updateListing
+      security:
+        - sessionBearer: []
+      parameters:
+        - $ref: '#/components/parameters/ResourceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProviderListingUpsertRequest'
+      responses:
+        '200':
+          description: Machine updated in place.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [listing]
+                properties:
+                  listing:
+                    $ref: '#/components/schemas/Provider'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: The machine belongs to another provider.
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /v1/portal/provider/contracts:
+    get:
+      tags: [Portal]
+      operationId: listProviderContracts
+      security:
+        - sessionBearer: []
+      responses:
+        '200':
+          description: Contract requests received by the owned listing.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContractList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /v1/portal/client/contracts:
+    get:
+      tags: [Portal]
+      operationId: listClientContracts
+      security:
+        - sessionBearer: []
+      responses:
+        '200':
+          description: Contracts requested by the session client.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContractList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /v1/portal/contracts:
+    post:
+      tags: [Portal]
+      operationId: createContract
+      security:
+        - sessionBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ContractCreateRequest'
+      responses:
+        '201':
+          description: Contract requested with a price snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContractEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /v1/portal/contracts/{id}/accept:
+    post:
+      tags: [Portal]
+      operationId: acceptContract
+      security:
+        - sessionBearer: []
+      parameters:
+        - $ref: '#/components/parameters/ResourceId'
+      responses:
+        '200':
+          description: Contract accepted by the provider owner.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContractEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: The session user does not own the contracted listing.
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /v1/portal/contracts/{id}/reject:
+    post:
+      tags: [Portal]
+      operationId: rejectContract
+      security:
+        - sessionBearer: []
+      parameters:
+        - $ref: '#/components/parameters/ResourceId'
+      responses:
+        '200':
+          description: Contract rejected by the provider owner.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContractEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: The session user does not own the contracted listing.
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /v1/portal/contracts/{id}/cancel:
+    post:
+      tags: [Portal]
+      operationId: cancelContract
+      security:
+        - sessionBearer: []
+      parameters:
+        - $ref: '#/components/parameters/ResourceId'
+      responses:
+        '200':
+          description: Pending contract cancelled by its client.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContractEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: The contract belongs to another client.
+        '409':
+          $ref: '#/components/responses/Conflict'
+components:
+  securitySchemes:
+    providerBearer:
+      type: http
+      scheme: bearer
+    executionBearer:
+      type: http
+      scheme: bearer
+    executionTokenHeader:
+      type: apiKey
+      in: header
+      name: X-Execution-Token
+    sessionBearer:
+      type: http
+      scheme: bearer
+  parameters:
+    ResourceId:
+      in: path
+      name: id
+      required: true
+      schema:
+        type: string
+        minLength: 1
+  responses:
+    ValidationError:
+      description: Strict validation failed, including unknown/private fields.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+    Unauthorized:
+      description: Provider or execution token is invalid.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+    NotFound:
+      description: Provider, job or route was not found.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+    Conflict:
+      description: Provider state, model or job transition conflicts with the request.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+    PricingUnavailable:
+      description: PricingService failed (`PRICING_UNAVAILABLE`).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+    PricingTimeout:
+      description: PricingService exceeded `PRICING_TIMEOUT_MS` (`PRICING_TIMEOUT`).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+    PaymentFailed:
+      description: >-
+        The safe testnet payment attempt failed. Details contain a normalized
+        reason code and never expose wallet provider errors or secrets.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+  schemas:
+    HealthReady:
+      type: object
+      additionalProperties: false
+      required: [status, service, database]
+      properties:
+        status:
+          const: ok
+        service:
+          const: marketplace-api
+        database:
+          const: ready
+    HealthUnavailable:
+      type: object
+      additionalProperties: false
+      required: [status, service, database]
+      properties:
+        status:
+          const: error
+        service:
+          const: marketplace-api
+        database:
+          const: unavailable
+    ProviderStatus:
+      type: string
+      enum: [ONLINE, OFFLINE, BUSY]
+    JobStatus:
+      type: string
+      enum:
+        - CREATED
+        - ASSIGNED
+        - CONNECTING
+        - RUNNING
+        - VERIFYING
+        - VERIFIED
+        - VERIFICATION_FAILED
+        - PAYMENT_PENDING
+        - PAID
+        - PAYMENT_FAILED
+        - FAILED
+        - CANCELLED
+    VerificationStatus:
+      type: string
+      enum: [NOT_REQUESTED, PENDING, PASSED, FAILED]
+    PaymentStatus:
+      type: string
+      enum: [NOT_STARTED, PENDING, PAID, FAILED]
+    PaymentMode:
+      type: string
+      enum: [SIMULATED, WDK_TESTNET]
+    ProviderRegisterRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - name
+        - qvacPublicKey
+        - walletAddress
+        - modelKey
+        - modelLabel
+        - hardwareLabel
+        - pricePer1kTokensAtomic
+      properties:
+        name:
+          type: string
+        qvacPublicKey:
+          type: string
+          minLength: 16
+        walletAddress:
+          type: string
+          pattern: '^0x[0-9a-fA-F]{40}$'
+        modelKey:
+          type: string
+        modelLabel:
+          type: string
+        hardwareLabel:
+          type: string
+        pricePer1kTokensAtomic:
+          type: string
+          pattern: '^\d+$'
+        pricingMode:
+          const: PER_JOB
+          default: PER_JOB
+    Provider:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - name
+        - qvacPublicKey
+        - walletAddress
+        - modelKey
+        - modelLabel
+        - hardwareLabel
+        - pricePer1kTokensAtomic
+        - pricingMode
+        - tokenSymbol
+        - status
+        - reputation
+        - jobsCompleted
+        - jobsFailed
+        - lastSeen
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        qvacPublicKey:
+          type: string
+        walletAddress:
+          type: string
+        modelKey:
+          type: string
+        modelLabel:
+          type: string
+        hardwareLabel:
+          type: string
+        description:
+          type: string
+          maxLength: 1000
+        pricePer1kTokensAtomic:
+          type: string
+          pattern: '^\d+$'
+        pricingMode:
+          const: PER_JOB
+        tokenSymbol:
+          const: mUSDT
+        status:
+          $ref: '#/components/schemas/ProviderStatus'
+        reputation:
+          type: integer
+          minimum: 0
+          maximum: 100
+        jobsCompleted:
+          type: integer
+          minimum: 0
+        jobsFailed:
+          type: integer
+          minimum: 0
+        lastSeen:
+          type: string
+          format: date-time
+    JobCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [providerId, modelKey, promptHash]
+      properties:
+        providerId:
+          type: string
+        verifierProviderId:
+          type: string
+        modelKey:
+          type: string
+        promptHash:
+          type: string
+          pattern: '^[a-fA-F0-9]{64}$'
+        consumerWallet:
+          type: string
+          pattern: '^0x[0-9a-fA-F]{40}$'
+    JobCreateResponse:
+      type: object
+      additionalProperties: false
+      required: [jobId, executionToken, provider, status, quotedAmountAtomic]
+      properties:
+        jobId:
+          type: string
+        executionToken:
+          type: string
+          writeOnly: true
+        provider:
+          $ref: '#/components/schemas/Provider'
+        verifier:
+          $ref: '#/components/schemas/Provider'
+        status:
+          const: ASSIGNED
+        quotedAmountAtomic:
+          type: string
+          pattern: '^\d+$'
+    JobProgressPatch:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        status:
+          $ref: '#/components/schemas/JobStatus'
+        outputHash:
+          type: string
+          pattern: '^[a-fA-F0-9]{64}$'
+        verifierOutputHash:
+          type: string
+          pattern: '^[a-fA-F0-9]{64}$'
+        inputTokens:
+          type: integer
+          minimum: 0
+        outputTokens:
+          type: integer
+          minimum: 0
+        durationMs:
+          type: integer
+          minimum: 0
+        verificationStatus:
+          $ref: '#/components/schemas/VerificationStatus'
+    Job:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - providerId
+        - modelKey
+        - promptHash
+        - quotedAmountAtomic
+        - status
+        - verificationStatus
+        - paymentStatus
+        - createdAt
+        - updatedAt
+      properties:
+        id:
+          type: string
+        providerId:
+          type: string
+        verifierProviderId:
+          type: string
+        modelKey:
+          type: string
+        promptHash:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+        outputHash:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+        verifierOutputHash:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+        inputTokens:
+          type: integer
+          minimum: 0
+        outputTokens:
+          type: integer
+          minimum: 0
+        durationMs:
+          type: integer
+          minimum: 0
+        quotedAmountAtomic:
+          type: string
+          pattern: '^\d+$'
+        settledAmountAtomic:
+          type: string
+          pattern: '^\d+$'
+        status:
+          $ref: '#/components/schemas/JobStatus'
+        verificationStatus:
+          $ref: '#/components/schemas/VerificationStatus'
+        paymentStatus:
+          $ref: '#/components/schemas/PaymentStatus'
+        paymentMode:
+          $ref: '#/components/schemas/PaymentMode'
+        paymentTxHash:
+          type: string
+        paymentErrorCode:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        startedAt:
+          type: string
+          format: date-time
+        completedAt:
+          type: string
+          format: date-time
+    MarketplaceStats:
+      type: object
+      additionalProperties: false
+      required:
+        - providersOnline
+        - jobsTotal
+        - jobsVerified
+        - successRate
+        - totalPaidAtomic
+      properties:
+        providersOnline:
+          type: integer
+          minimum: 0
+        jobsTotal:
+          type: integer
+          minimum: 0
+        jobsVerified:
+          type: integer
+          minimum: 0
+        successRate:
+          type: number
+          minimum: 0
+          maximum: 100
+        totalPaidAtomic:
+          type: string
+          pattern: '^\d+$'
+    ApiError:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        details:
+          type: object
+          additionalProperties: true
+    User:
+      type: object
+      additionalProperties: false
+      required: [id, email, role, displayName, createdAt]
+      properties:
+        id:
+          type: string
+        email:
+          type: string
+          format: email
+        role:
+          type: string
+          enum: [PROVIDER, CLIENT]
+        displayName:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+    AuthRegisterRequest:
+      type: object
+      additionalProperties: false
+      required: [email, password, role, displayName]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          minLength: 8
+        role:
+          type: string
+          enum: [PROVIDER, CLIENT]
+        displayName:
+          type: string
+          minLength: 1
+          maxLength: 120
+    AuthLoginRequest:
+      type: object
+      additionalProperties: false
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+    AuthSession:
+      type: object
+      additionalProperties: false
+      required: [user, token, expiresAt]
+      properties:
+        user:
+          $ref: '#/components/schemas/User'
+        token:
+          type: string
+        expiresAt:
+          type: string
+          format: date-time
+    ProviderListingUpsertRequest:
+      type: object
+      additionalProperties: false
+      required: [name, qvacPublicKey, modelLabel, pricePer1kTokensAtomic, walletAddress]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 120
+        qvacPublicKey:
+          type: string
+          minLength: 16
+          maxLength: 500
+        description:
+          type: string
+          maxLength: 1000
+        modelKey:
+          type: string
+          default: demo-llm
+        modelLabel:
+          type: string
+          minLength: 1
+          maxLength: 200
+        hardwareLabel:
+          type: string
+          maxLength: 200
+        pricePer1kTokensAtomic:
+          type: string
+          pattern: '^\d+$'
+        walletAddress:
+          type: string
+          pattern: '^0x[0-9a-fA-F]{40}$'
+    ContractCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [providerId]
+      properties:
+        providerId:
+          type: string
+        message:
+          type: string
+          maxLength: 500
+    Contract:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - providerId
+        - clientUserId
+        - status
+        - pricePer1kTokensAtomic
+        - modelLabel
+        - message
+        - createdAt
+        - updatedAt
+        - providerName
+        - providerQvacPublicKey
+        - providerWalletAddress
+        - clientDisplayName
+      properties:
+        id:
+          type: string
+        providerId:
+          type: string
+        clientUserId:
+          type: string
+        status:
+          type: string
+          enum: [REQUESTED, ACCEPTED, REJECTED, CANCELLED]
+        pricePer1kTokensAtomic:
+          type: string
+          pattern: '^\d+$'
+        modelLabel:
+          type: string
+        message:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        providerName:
+          type: string
+        providerQvacPublicKey:
+          type: string
+        providerWalletAddress:
+          type: string
+        clientDisplayName:
+          type: string
+    ContractEnvelope:
+      type: object
+      additionalProperties: false
+      required: [contract]
+      properties:
+        contract:
+          $ref: '#/components/schemas/Contract'
+    ContractList:
+      type: object
+      additionalProperties: false
+      required: [contracts]
+      properties:
+        contracts:
+          type: array
+          items:
+            $ref: '#/components/schemas/Contract'
+    WalletSummary:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [role, initialCreditAtomic, spentAtomic, balanceAtomic, jobsPaid]
+          properties:
+            role:
+              const: CLIENT
+            initialCreditAtomic:
+              type: string
+              pattern: '^\d+$'
+            spentAtomic:
+              type: string
+              pattern: '^\d+$'
+            balanceAtomic:
+              type: string
+              pattern: '^\d+$'
+            jobsPaid:
+              type: integer
+              minimum: 0
+        - type: object
+          additionalProperties: false
+          required: [role, earnedAtomic, jobsPaid, listings, walletAddress]
+          properties:
+            role:
+              const: PROVIDER
+            earnedAtomic:
+              type: string
+              pattern: '^\d+$'
+            jobsPaid:
+              type: integer
+              minimum: 0
+            listings:
+              type: integer
+              minimum: 0
+            walletAddress:
+              type: ['string', 'null']
